@@ -1,5 +1,5 @@
 /* ISP-Ⅰ v0.8.3: static app shell only; no personal data is cached here. */
-const CACHE = 'ispi-static-v0.9.1a';
+const CACHE = 'ispi-static-v0.9.2';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(FILES)).then(() => self.skipWaiting()));
