@@ -11,3 +11,9 @@ self.addEventListener('notificationclick',event=>{
   await self.clients.openWindow(target);
  })());
 });
+
+self.addEventListener('push',event=>{
+ let message={};try{message=event.data?.json()||{}}catch{message={}}
+ const title='ISP-Ⅰ テスト通知';
+ event.waitUntil(self.registration.showNotification(title,{body:'SupabaseからWeb Push通知が届きました。',icon:'./icon.svg',badge:'./icon.svg',tag:'ispi-server-push-test',data:{url:new URL('./?window=notifications',self.registration.scope).href}}));
+});
