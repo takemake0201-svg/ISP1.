@@ -242,10 +242,12 @@ async function pushAuthEnsure(){
   parent=window.opener;
   if(!parent||parent.closed||parent.location.origin!==location.origin||typeof parent.authEnsure!=='function'||typeof parent.authProject!=='function'||parent.authProject()!==authProject())parent=null;
  }catch{parent=null}
- if(!parent)throw Error('この通知ウィンドウではSupabase認証を確認できません。メイン画面でSupabaseにログインし、そこから通知画面を開き直してください。');
- const session=await parent.authEnsure();
- if(!session?.access_token||!session?.userId)throw Error('メイン画面のSupabase認証を確認できません。');
- return {access_token:session.access_token,userId:session.userId};
+ if(parent){
+  try{const session=await parent.authEnsure();if(session?.access_token&&session?.userId)return {access_token:session.access_token,userId:session.userId}}catch(e){console.warn('ISP-I 親ウィンドウ認証',e.message)}
+ }
+ const shared=await pushRequestWindowAuth();
+ if(shared)return shared;
+ throw Error('Supabase認証を共有できません。クラウドにログインしたメイン画面を開いたまま、通知画面から再試行してください。');
 }
 async function pushRest(path,method,body){const c=authConfig(),sess=await pushAuthEnsure();if(!validAuthConfig(c))throw Error('Supabaseの接続設定が必要です。');const resp=await fetch(c.url.replace(/\/$/,'')+'/rest/v1/'+path,{method,headers:{apikey:c.key,Authorization:'Bearer '+sess.access_token,'Content-Type':'application/json',Prefer:'return=representation'},body:body===undefined?undefined:JSON.stringify(body),cache:'no-store'});if(!resp.ok)throw Error('Supabase DB: HTTP '+resp.status+' '+(await resp.text()).slice(0,180));return resp.status===204?[]:await resp.json()}
 async function pushFunction(action){const c=authConfig(),sess=await pushAuthEnsure();const resp=await fetch(c.url.replace(/\/$/,'')+'/functions/v1/ispi-push-test',{method:'POST',headers:{apikey:c.key,Authorization:'Bearer '+sess.access_token,'Content-Type':'application/json'},body:JSON.stringify({action}),cache:'no-store'});const data=await resp.json().catch(()=>({}));if(!resp.ok)throw Error(data.error||'Edge Function HTTP '+resp.status);return data}
@@ -378,6 +380,34 @@ async function authRefresh(force=false){
  try{return await authRefreshPromise}finally{authRefreshPromise=null}
 }
 async function authEnsure(){if(authBootPromise)await authBootPromise;if(!supabaseSession)throw Error('Supabaseにログインしてください。');return authRefresh()}
+
+/* Same-origin, in-memory auth handoff for Edge PWA windows without window.opener.
+   Only respond from the main window; never persist access tokens in this channel. */
+const ISP_PUSH_AUTH_CHANNEL='ispi-push-auth-v2';
+let ispPushAuthChannel=null;
+try{if('BroadcastChannel' in window){
+ ispPushAuthChannel=new BroadcastChannel(ISP_PUSH_AUTH_CHANNEL);
+ ispPushAuthChannel.addEventListener('message',async event=>{
+  const msg=event.data;
+  if(!msg||msg.type!=='request'||typeof msg.id!=='string'||!msg.id||!supabaseSession||POPUP)return;
+  if(msg.project!==authProject()||!validAuthConfig(authConfig()))return;
+  try{const session=await authEnsure();
+   if(session?.access_token&&session?.userId)ispPushAuthChannel.postMessage({type:'response',id:msg.id,project:authProject(),access_token:session.access_token,userId:session.userId});
+  }catch(e){console.warn('ISP-I 認証共有を保留',e.message)}
+ });
+}}catch(e){console.warn('ISP-I BroadcastChannel unavailable',e.message)}
+async function pushRequestWindowAuth(){
+ if(!ispPushAuthChannel||!validAuthConfig(authConfig()))return null;
+ const id=crypto.randomUUID();const project=authProject();
+ return await new Promise(resolve=>{
+  let done=false;const finish=value=>{if(done)return;done=true;clearTimeout(timer);ispPushAuthChannel.removeEventListener('message',receive);resolve(value)};
+  const receive=event=>{const msg=event.data;if(msg?.type==='response'&&msg.id===id&&msg.project===project&&typeof msg.access_token==='string'&&typeof msg.userId==='string')finish({access_token:msg.access_token,userId:msg.userId})};
+  ispPushAuthChannel.addEventListener('message',receive);
+  const timer=setTimeout(()=>finish(null),3500);
+  ispPushAuthChannel.postMessage({type:'request',id,project});
+ });
+}
+
 function authRestore(){if(authBootPromise)return authBootPromise;
  authBootPromise=(async()=>{let saved=null;
   for(const [store,mode] of [[sessionStorage,'tab'],[localStorage,'device']]){try{const x=JSON.parse(store.getItem(AUTH_SESSION_KEY)||'null');if(x?.session&&x.project===authProject()&&x.mode===mode){saved=x;break}}catch{}}
