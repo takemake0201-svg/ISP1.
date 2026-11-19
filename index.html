@@ -141,6 +141,7 @@ function persist(){
     localStorage.setItem(KEY,JSON.stringify(next));
     try{recoveryAutoCheckpoint(next)}catch(e){console.warn("復旧履歴の保存失敗",e)}
     db=normalizeData(next);savedBaseline=cloneData(db);pendingExternal=false;conflictActive=false;document.getElementById('ispi-sync-notice')?.remove();lastSaveError='';
+    try{ispiNotifyReconcile(next)}catch(e){console.warn('通知予約の準備失敗',e)}
     return true;
   }catch(err){
     lastSaveError=String(err?.message||err);console.error('ISP-I 保存失敗',err);
@@ -215,7 +216,7 @@ return out.sort((a,b)=>a.start-b.start||a.title.localeCompare(b.title,'ja'))}
 function icsTokyoUtc(d){const utc=Date.UTC(d.getFullYear(),d.getMonth(),d.getDate(),d.getHours()-9,d.getMinutes(),d.getSeconds());return new Date(utc).toISOString().replace(/[-:]/g,'').replace(/\.\d{3}Z$/,'Z')}
 function icsContent(events){const now=icsStamp(new Date(),true);const lines=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//ISP-I//Calendar Export 0.7.6//JA','CALSCALE:GREGORIAN','METHOD:PUBLISH','X-WR-CALNAME:ISP-I'];for(const e of events){lines.push('BEGIN:VEVENT','UID:'+icsEscape(e.kind+'-'+e.id)+'@isp-i.local','DTSTAMP:'+now,'DTSTART:'+icsTokyoUtc(e.start),'DTEND:'+icsTokyoUtc(e.end),'SUMMARY:'+icsEscape(e.title),'DESCRIPTION:'+icsEscape(e.note));if(e.alarm){lines.push('BEGIN:VALARM','ACTION:DISPLAY','DESCRIPTION:'+icsEscape(e.title),'TRIGGER:-PT'+e.lead+'M','END:VALARM')}lines.push('END:VEVENT')}lines.push('END:VCALENDAR');return lines.map(icsFold).join('\r\n')+'\r\n'}
 function exportIcs(){const f=document.getElementById('icsExportForm');if(!f)return;const d=new FormData(f),o={classes:d.has('classes'),schedules:d.has('schedules'),todo:d.has('todo'),from:String(d.get('from')||''),to:String(d.get('to')||'')};if(!o.classes&&!o.schedules&&!o.todo){ispDialog('出力対象を1種類以上選択してください。');return}if(!/^\d{4}-\d{2}-\d{2}$/.test(o.from)||!/^\d{4}-\d{2}-\d{2}$/.test(o.to)||o.from>o.to||!icsDate(o.from)||!icsDate(o.to)){ispDialog('開始日と終了日を正しく指定してください。');return}const events=icsEvents(o);if(!events.length){ispDialog('指定した期間・種類に該当する予定がありません。');return}const blob=new Blob([icsContent(events)],{type:'text/calendar;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='ISP-I-calendar-'+o.from+'-'+o.to+'.ics';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),3000);ispDialog(events.length+'件のカレンダーデータのダウンロードを開始しました。\n※同じUIDでも再インポート時に更新されるとは限りません。専用カレンダーでの取り込みを推奨します。')}
-function notificationScreen(){const n=getNotificationSettings();return `<div class="top"><b>スマートフォン通知機能</b><span class="small">設定管理・試作版</span></div>${panel('通知設定',`<p class="small">通知する内容とタイミングを設定します。<strong>このバージョンでは端末内テストに加え、Supabase設定後にサーバーからのWeb Pushテストを利用できます。予定時刻の自動通知は未実装です。</strong>Web Push登録にはSupabaseへのログインと通信が必要です。</p><form id="notificationForm"><div class="notification-options"><strong>① 通知対象</strong><label><input type="checkbox" name="todo" ${n.todo?'checked':''}> ToDoの締切</label><label><input type="checkbox" name="classes" ${n.classes?'checked':''}> 授業開始</label><label><input type="checkbox" name="schedules" ${n.schedules?'checked':''}> スケジュール開始</label><label><input type="checkbox" name="routines" ${n.routines?'checked':''}> ルーティーン</label></div><div class="notification-options"><label for="notificationLead"><strong>② 通知タイミング（共通）</strong></label><select id="notificationLead" name="leadMinutes"><option value="10" ${Number(n.leadMinutes)===10?'selected':''}>10分前</option><option value="30" ${Number(n.leadMinutes)===30?'selected':''}>30分前</option><option value="60" ${Number(n.leadMinutes)===60?'selected':''}>1時間前</option><option value="1440" ${Number(n.leadMinutes)===1440?'selected':''}>前日（24時間前）</option></select></div><div class="notification-options"><strong>③ 夜間通知</strong><label><input type="checkbox" name="quietHours" ${n.quietHours?'checked':''}> 22:00〜翌7:00の通知を抑制する</label><p class="small">※実際の抑制・配信処理は今後のバージョンで実装します。</p></div><div class="actions"><button class="btn primary" type="submit">設定を保存</button><button class="btn" type="button" id="notificationReset">初期設定に戻す</button></div><p id="notificationStatus" class="small" role="status" aria-live="polite"></p></form>`)}${panel('④ Android通知テスト（第1段階）',`<p class="small">この端末で通知の権限・Service Workerを確認します。通知はボタン操作時のみ表示されます。通知許可はAndroidの設定から変更できます。</p><p id="pushTestStatus" class="small" role="status" aria-live="polite">確認中…</p><div class="actions"><button type="button" class="btn" id="pushCheck">環境を確認</button><button type="button" class="btn primary" id="pushAllow">通知を許可する</button><button type="button" class="btn" id="pushSendTest">テスト通知を表示</button></div><p class="small">※HTTPS上で実行してください。端末によっては通知許可をOS設定から有効にする必要があります。ICS方式は引き続き利用できます。</p>`)}${panel('⑤ Web Push（第2段階・Supabase接続）',`<p class="small">Supabaseにログインし、サーバー側のテーブル・Edge Function・VAPID鍵を設定した後に利用できます。登録した端末のPush購読情報はSupabaseに保存されます。<strong>アプリを閉じた状態での受信を確認するための手動テストです。予定連動は未実装です。</strong></p><p id="remotePushStatus" class="small" role="status" aria-live="polite">未接続</p><div class="actions"><button type="button" class="btn" id="remotePushRegister">この端末でWeb Pushを有効にする</button><button type="button" class="btn primary" id="remotePushTest">サーバーからテスト通知を送る</button><button type="button" class="btn danger" id="remotePushRemove">この端末の登録を解除</button></div><p class="small">※通知権限を許可した状態で操作してください。ログアウトしてもPush購読は自動解除されません。不要になった場合は登録を解除してください。</p>`)}`}
+function notificationScreen(){const n=getNotificationSettings();return `<div class="top"><b>スマートフォン通知機能</b><span class="small">設定管理・試作版</span></div>${panel('通知設定',`<p class="small">通知する内容とタイミングを設定します。<strong>このバージョンでは端末内テストに加え、Supabase設定後にサーバーからのWeb Pushテストを利用できます。ToDoは締切60分前、スケジュールは開始30分前に通知予約します。通知予約のSupabase側設定が必要です。</strong>Web Push登録にはSupabaseへのログインと通信が必要です。</p><form id="notificationForm"><div class="notification-options"><strong>① 通知対象</strong><label><input type="checkbox" name="todo" ${n.todo?'checked':''}> ToDoの締切</label><label><input type="checkbox" name="classes" ${n.classes?'checked':''}> 授業開始</label><label><input type="checkbox" name="schedules" ${n.schedules?'checked':''}> スケジュール開始</label><label><input type="checkbox" name="routines" ${n.routines?'checked':''}> ルーティーン</label></div><div class="notification-options"><label for="notificationLead"><strong>② 通知タイミング（共通）</strong></label><select id="notificationLead" name="leadMinutes"><option value="10" ${Number(n.leadMinutes)===10?'selected':''}>10分前</option><option value="30" ${Number(n.leadMinutes)===30?'selected':''}>30分前</option><option value="60" ${Number(n.leadMinutes)===60?'selected':''}>1時間前</option><option value="1440" ${Number(n.leadMinutes)===1440?'selected':''}>前日（24時間前）</option></select></div><div class="notification-options"><strong>③ 夜間通知</strong><label><input type="checkbox" name="quietHours" ${n.quietHours?'checked':''}> 22:00〜翌7:00の通知を抑制する</label><p class="small">※実際の抑制・配信処理は今後のバージョンで実装します。</p></div><div class="actions"><button class="btn primary" type="submit">設定を保存</button><button class="btn" type="button" id="notificationReset">初期設定に戻す</button></div><p id="notificationStatus" class="small" role="status" aria-live="polite"></p></form>`)}${panel('④ Android通知テスト（第1段階）',`<p class="small">この端末で通知の権限・Service Workerを確認します。通知はボタン操作時のみ表示されます。通知許可はAndroidの設定から変更できます。</p><p id="pushTestStatus" class="small" role="status" aria-live="polite">確認中…</p><div class="actions"><button type="button" class="btn" id="pushCheck">環境を確認</button><button type="button" class="btn primary" id="pushAllow">通知を許可する</button><button type="button" class="btn" id="pushSendTest">テスト通知を表示</button></div><p class="small">※HTTPS上で実行してください。端末によっては通知許可をOS設定から有効にする必要があります。ICS方式は引き続き利用できます。</p>`)}${panel('⑤ Web Push（第2段階・Supabase接続）',`<p class="small">Supabaseにログインし、サーバー側のテーブル・Edge Function・VAPID鍵を設定した後に利用できます。登録した端末のPush購読情報はSupabaseに保存されます。<strong>アプリを閉じた状態での受信を確認するための手動テストです。通知予約の連動にはSupabase側の追加設定が必要です。</strong></p><p id="remotePushStatus" class="small" role="status" aria-live="polite">未接続</p><div class="actions"><button type="button" class="btn" id="remotePushRegister">この端末でWeb Pushを有効にする</button><button type="button" class="btn primary" id="remotePushTest">サーバーからテスト通知を送る</button><button type="button" class="btn danger" id="remotePushRemove">この端末の登録を解除</button></div><p class="small">※通知権限を許可した状態で操作してください。ログアウトしてもPush購読は自動解除されません。不要になった場合は登録を解除してください。</p>`)}`}
 async function ispPushStatus(){
  const el=document.getElementById('pushTestStatus');if(!el)return;
  const secure=window.isSecureContext, supported=('Notification' in window)&&('serviceWorker' in navigator);
@@ -264,6 +265,67 @@ async function pushAuthEnsure(){
  throw Error('Supabase認証を共有できません。クラウドにログインしたメイン画面を開いたまま、通知画面から再試行してください。');
 }
 async function pushRest(path,method,body){const c=authConfig(),sess=await pushAuthEnsure();if(!validAuthConfig(c))throw Error('Supabaseの接続設定が必要です。');const resp=await fetch(c.url.replace(/\/$/,'')+'/rest/v1/'+path,{method,headers:{apikey:c.key,Authorization:'Bearer '+sess.access_token,'Content-Type':'application/json',Prefer:'return=representation'},body:body===undefined?undefined:JSON.stringify(body),cache:'no-store'});if(!resp.ok)throw Error('Supabase DB: HTTP '+resp.status+' '+(await resp.text()).slice(0,180));return resp.status===204?[]:await resp.json()}
+
+// v0.11.9: notification-only outbox. Never uploads ToDo or schedule bodies.
+const ISPI_NOTIFY_OUTBOX='ispi-notify-outbox-v0119';
+const ISPI_NOTIFY_LAST='ispi-notify-last-v0119';
+function ispiNotifyKey(prefix){return prefix+':'+encodeURIComponent(profileIdentity()||'guest')}
+let ispiNotifyBusy=false,ispiNotifyTimer=null;
+function ispiNotifyDesired(data){
+ const map={};const settings=data.notificationSettings||{};
+ const entries=[['todo',data.todos||[],60,settings.todo!==false],['schedule',data.schedules||[],30,settings.schedules!==false]];
+ for(const [kind,records,minutes,enabled] of entries){if(!enabled)continue;
+  for(const t of records){if(!t.id||!t.date||(kind==='todo'&&t.done))continue;
+   const clock=kind==='todo'?(t.time||'23:59'):t.time;
+   if(!/^\d{4}-\d{2}-\d{2}$/.test(t.date)||!/^\d{2}:\d{2}$/.test(clock||''))continue;
+   const start=new Date(t.date+'T'+clock+':00');if(Number.isNaN(start.getTime()))continue;
+   const when=new Date(start.getTime()-minutes*60000);
+   if(when.getTime()<=Date.now())continue;
+   map[kind+':'+t.id]={source_type:kind,source_id:String(t.id),notify_at:when.toISOString()};
+  }
+ }
+ return map;
+}
+function ispiNotifyOutbox(){try{return JSON.parse(localStorage.getItem(ispiNotifyKey(ISPI_NOTIFY_OUTBOX))||'{}')}catch{return {}}}
+function ispiNotifyReconcile(data){
+ if(!profileIdentity()||activeProfile!==profileIdentity())return;
+ const wanted=ispiNotifyDesired(data),last=(()=>{try{return JSON.parse(localStorage.getItem(ispiNotifyKey(ISPI_NOTIFY_LAST))||'{}')}catch{return {}}})();
+ const queue=ispiNotifyOutbox();
+ for(const id of new Set([...Object.keys(last),...Object.keys(wanted)])){
+  if(JSON.stringify(wanted[id]||null)!==JSON.stringify(last[id]||null))queue[id]=wanted[id]?{action:'upsert',record:wanted[id]}:{action:'cancel',source_type:id.split(':')[0],source_id:id.slice(id.indexOf(':')+1)};
+ }
+ localStorage.setItem(ispiNotifyKey(ISPI_NOTIFY_OUTBOX),JSON.stringify(queue));
+ localStorage.setItem(ispiNotifyKey(ISPI_NOTIFY_LAST),JSON.stringify(wanted));
+ ispiNotifySchedule();
+}
+function ispiNotifySchedule(){clearTimeout(ispiNotifyTimer);ispiNotifyTimer=setTimeout(()=>ispiNotifyFlush(),1200)}
+async function ispiNotifyFlush(){
+ if(ispiNotifyBusy||!navigator.onLine||!supabaseSession?.access_token||activeProfile!==profileIdentity())return;
+ ispiNotifyBusy=true;
+ try{
+  const queue=ispiNotifyOutbox();
+  for(const [id,job] of Object.entries(queue)){
+   if(!supabaseSession?.access_token)break;
+   try{
+    if(job.action==='upsert'){
+     const record={...job.record,user_id:(await pushAuthEnsure()).userId,status:'pending'};
+     await pushRest('ispi_notification_jobs?on_conflict=user_id,source_type,source_id','POST',record);
+    }else{
+     const userId=(await pushAuthEnsure()).userId;
+     const params=new URLSearchParams({user_id:'eq.'+userId,source_type:'eq.'+job.source_type,source_id:'eq.'+job.source_id,status:'eq.pending'});
+     await pushRest('ispi_notification_jobs?'+params.toString(),'PATCH',{status:'cancelled'});
+    }
+    const current=ispiNotifyOutbox();if(JSON.stringify(current[id])===JSON.stringify(job)){delete current[id];localStorage.setItem(ispiNotifyKey(ISPI_NOTIFY_OUTBOX),JSON.stringify(current))}
+    try{window.ispiLog?.('INFO','NOTIFICATION','notification.job.'+job.action,{source_type:job.record?.source_type||job.source_type})}catch{}
+   }catch(err){console.warn('ISP-I 通知予約の送信待ち',err?.message);try{window.ispiLog?.('WARN','NOTIFICATION','notification.job.retry',{})}catch{};break}
+  }
+ }finally{ispiNotifyBusy=false}
+}
+window.addEventListener('online',()=>ispiNotifySchedule());
+setInterval(()=>{if(supabaseSession?.access_token&&Object.keys(ispiNotifyOutbox()).length)ispiNotifySchedule()},30000);
+// Initial reconciliation after auth restoration and on opening the notification settings.
+setTimeout(()=>{try{ispiNotifyReconcile(readCurrent())}catch{}},2000);
+
 async function pushFunction(action){const c=authConfig(),sess=await pushAuthEnsure();const resp=await fetch(c.url.replace(/\/$/,'')+'/functions/v1/ispi-push-test',{method:'POST',headers:{apikey:c.key,Authorization:'Bearer '+sess.access_token,'Content-Type':'application/json'},body:JSON.stringify({action}),cache:'no-store'});const data=await resp.json().catch(()=>({}));if(!resp.ok)throw Error(data.error||'Edge Function HTTP '+resp.status);return data}
 function bindRemotePush(){const status=document.getElementById('remotePushStatus');if(!status)return;const say=t=>{if(status.isConnected)status.textContent=t};
  const register=document.getElementById('remotePushRegister'),test=document.getElementById('remotePushTest'),remove=document.getElementById('remotePushRemove');
@@ -383,7 +445,7 @@ const AUTH_SESSION_KEY='ispi-supabase-session-v096';
 let supabaseSession=null,authStorageMode='memory',authEpoch=0,authRefreshPromise=null,authBootPromise=null;
 function authConfig(){try{return JSON.parse(localStorage.getItem(AUTH_CONFIG_KEY)||'null')}catch{return null}}
 function validAuthConfig(c){if(!c||typeof c.key!=='string'||!c.key.trim())return false;try{const u=new URL(c.url);return u.protocol==='https:'&&/^[a-z0-9-]+\.supabase\.co$/i.test(u.hostname)&&u.pathname==='/'&&!u.username&&!u.password&&!u.search&&!u.hash}catch{return false}}
-function authNotice(message){cloudOwnerStatus();const el=document.getElementById('authMessage');if(el)el.textContent=message;const status=document.getElementById('authStatus');if(status)status.textContent=supabaseSession?'ログイン中':'未ログイン'}
+function authNotice(message){if(supabaseSession?.access_token)setTimeout(()=>{try{ispiNotifyReconcile(readCurrent())}catch{}},500);cloudOwnerStatus();const el=document.getElementById('authMessage');if(el)el.textContent=message;const status=document.getElementById('authStatus');if(status)status.textContent=supabaseSession?'ログイン中':'未ログイン'}
 function authProject(){const c=authConfig();return c?.url||''}
 // v0.11.1: the selector is recreated whenever the settings screen renders.
 // The actual session mode, not the select's HTML default, is authoritative.
